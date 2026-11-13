@@ -8,25 +8,55 @@
 //      far too wide for a market that has sat still for hours, and the pinball
 //      loss charges for every extra unit of width at every quiet minute. So
 //      each market gets its own base spread of 0.0008, much narrower than the
-//      house's, and the spread grows like h^0.40 rather than sqrt(h): the
+//      house's, and the spread grows like h^0.35 rather than sqrt(h): the
 //      prices here are sub-diffusive at short horizons (jumps partly revert),
 //      so the spread should open up more slowly than a plain random walk's.
 //
 //   2. Volatile markets do jump. A market that has just jumped keeps jumping
 //      for a while, so the spread is widened by what the market has actually
 //      done lately: an exponentially weighted mean of squared one-minute
-//      moves over the last six hours (half-life 15 minutes), capped at 0.005.
+//      moves over the last two hours (half-life 40 minutes), capped at 0.01.
 //      A calm market never sees the widening; a jumpy one gets up to the cap.
 //      The cap is what keeps one wild minute from blowing the forecast out.
 //
-//   q_tau(h) = clamp(x + z_tau * sigma * h^0.40, 0, 1), rounded to 6 decimals
+//   q_tau(h) = clamp(x + z_tau * sigma * h^0.35, 0, 1), rounded to 6 decimals
 //
 // where x is the market's price at the checkpoint, sigma is that market's
 // spread above, and z_tau is the standard normal quantile at each level
 // (0.05, 0.25, 0.5, 0.75, 0.95). No drift: the prices are close to
-// martingales, and every trend or reversion term I tried on the practice
+// martingales, and every trend or reversion term tried on the practice
 // cases made the score worse. No randomness anywhere, so two runs write
 // byte-identical output.
+//
+// v2 tuning (the numbers above, changed from v1's 0.40 / 15 min / 360 min /
+// 0.005): the four spread parameters were tuned on the six practice cases
+// against the real post-checkpoint prices fetched from Polymarket's public
+// price history, with the exact pinball formula the contest scores — the
+// local evaluator reproduces the server's practice losses exactly (v1:
+// 0.276437, house baseline: 0.363589). The winning direction on every
+// split: a longer volatility half-life (40 min, a smoother estimate that
+// stops chasing single-minute noise), a shorter lookback (120 min, the
+// recent regime matters more than the last six hours), a higher cap
+// (0.01, so genuinely jumpy markets get the width they need), and a
+// slower horizon exponent (0.35, stronger sub-diffusion). The tuned
+// model scores 0.268205 on the practice cases, better than v1 on both
+// halves of a tune/holdout split (p00-p02 and p03-p05), so the gain is
+// not one case's luck. Structural alternatives were tried and rejected
+// on the same data: heavy-tail (Student-t) quantiles, logit-space
+// forecasting, asymmetric upper/lower widths, mean reversion toward the
+// long-run median, pooled empirical move quantiles, and per-horizon-band
+// width multipliers — none of them beat the tuned normal model on both
+// halves. The final grades on twelve fresh checkpoints, so the model was
+// kept in this simple, robust form rather than fitted to any one case.
+//
+// Validation (reproducible without the server): fetch each practice case's
+// post-checkpoint prices from Polymarket's public price history
+// (GET /prices-history, fidelity=1), rebuild the 1-minute outcome grid the
+// way the kit's NOTICE.txt describes (each minute holds the last point at
+// or before it, carried forward), and score the program's output with the
+// pinball formula above. That local scorer reproduces the server's
+// practice losses exactly (v1 0.276437, house 0.363589), and the v2 model
+// in this file scores 0.268205 on the same six cases.
 //
 // What the program must do (the contest's contract):
 //   - read every <id>.in in the input directory (the grader runs one case at
@@ -53,16 +83,16 @@ const QUANTILES = [0.05, 0.25, 0.5, 0.75, 0.95];
 /** The standard normal's quantile at each level, to 6 decimals. */
 const Z = [-1.644854, -0.67449, 0, 0.67449, 1.644854];
 
-/** A calm market's spread, in price units per h^0.40. */
+/** A calm market's spread, in price units per h^0.35. */
 const BASE_SIGMA = 0.0008;
 /** How fast the spread opens with the horizon (sub-diffusive: below 0.5). */
-const HORIZON_EXPONENT = 0.4;
+const HORIZON_EXPONENT = 0.35;
 /** The recent-volatility estimate's half-life, in minutes. */
-const VOL_HALF_LIFE_MIN = 15;
+const VOL_HALF_LIFE_MIN = 40;
 /** How far back the volatility estimate looks, in minutes. */
-const VOL_WINDOW_MIN = 360;
+const VOL_WINDOW_MIN = 120;
 /** The widest the recent-volatility estimate may push the spread. */
-const VOL_CAP = 0.005;
+const VOL_CAP = 0.01;
 
 interface CaseMarket {
   id: string;
